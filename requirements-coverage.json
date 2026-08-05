@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "requirements": [
+    {"requirement_id":"req-embedded-cpp","kind":"required","technical":true,"coverage":"full","summary":"Portable C++ battery firmware core with strict compilation.","evidence":["cpp/bms_core.cpp","Dockerfile"],"tests":["cpp/test_core.cpp"]},
+    {"requirement_id":"req-can-protocol","kind":"required","technical":true,"coverage":"full","summary":"Eight-byte CAN payload decoding with bounds validation.","evidence":["cpp/bms_core.cpp"],"tests":["cpp/test_core.cpp"]},
+    {"requirement_id":"req-rtos-design","kind":"required","technical":true,"coverage":"full","summary":"Deterministic safety state transitions suitable for an RTOS task boundary.","evidence":["cpp/bms_core.cpp"],"tests":["cpp/test_core.cpp"]},
+    {"requirement_id":"req-production-experience","kind":"required","technical":false,"coverage":"not_demonstrable","summary":"Employment tenure and production ownership cannot be established by source code.","evidence":[],"tests":[]},
+    {"requirement_id":"pref-edge-anomaly","kind":"preferred","technical":true,"coverage":"full","summary":"Native robust-delta anomaly detection without untrained model weights.","evidence":["cpp/bms_core.cpp","src/main.py"],"tests":["tests/test_api.py","smoke.py"]},
+    {"requirement_id":"pref-python-analysis","kind":"preferred","technical":true,"coverage":"full","summary":"Typed HTTP analysis harness and validation layer.","evidence":["src/main.py"],"tests":["tests/test_api.py"]},
+    {"requirement_id":"pref-ota-safety","kind":"preferred","technical":true,"coverage":"full","summary":"OTA hold and electrical isolation safety states.","evidence":["cpp/bms_core.cpp"],"tests":["cpp/test_core.cpp"]}
+  ]
+}
