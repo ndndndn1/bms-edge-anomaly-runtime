@@ -14,6 +14,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY --from=build /build/libbms_core.so /app/libbms_core.so
 COPY src ./src
+COPY config ./config
 CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]
 
 FROM runtime AS test

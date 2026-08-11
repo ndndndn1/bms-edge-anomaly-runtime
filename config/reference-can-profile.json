@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "pack_id": "reference-pack",
+  "timestamp_ms": 1700000000000,
+  "cells": 8,
+  "window": 32,
+  "baseline_volts": [3.7, 3.701, 3.702, 3.703, 3.704, 3.705, 3.706, 3.707],
+  "drift_volts_per_step": 0.0001,
+  "temperature_c": 30.0,
+  "anomaly_step": 31,
+  "anomaly_cell": 3,
+  "anomaly_delta_volts": 0.3
+}
