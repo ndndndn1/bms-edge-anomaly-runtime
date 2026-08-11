@@ -1,12 +1,13 @@
 {
   "schema_version": 1,
   "requirements": [
-    {"requirement_id":"req-embedded-cpp","kind":"required","technical":true,"coverage":"full","summary":"Portable C++ battery firmware core with strict compilation.","evidence":["cpp/bms_core.cpp","Dockerfile"],"tests":["cpp/test_core.cpp"]},
-    {"requirement_id":"req-can-protocol","kind":"required","technical":true,"coverage":"full","summary":"Eight-byte CAN payload decoding with bounds validation.","evidence":["cpp/bms_core.cpp"],"tests":["cpp/test_core.cpp"]},
-    {"requirement_id":"req-rtos-design","kind":"required","technical":true,"coverage":"full","summary":"Deterministic safety state transitions suitable for an RTOS task boundary.","evidence":["cpp/bms_core.cpp"],"tests":["cpp/test_core.cpp"]},
-    {"requirement_id":"req-production-experience","kind":"required","technical":false,"coverage":"not_demonstrable","summary":"Employment tenure and production ownership cannot be established by source code.","evidence":[],"tests":[]},
-    {"requirement_id":"pref-edge-anomaly","kind":"preferred","technical":true,"coverage":"full","summary":"Native robust-delta anomaly detection without untrained model weights.","evidence":["cpp/bms_core.cpp","src/main.py"],"tests":["tests/test_api.py","smoke.py"]},
-    {"requirement_id":"pref-python-analysis","kind":"preferred","technical":true,"coverage":"full","summary":"Typed HTTP analysis harness and validation layer.","evidence":["src/main.py"],"tests":["tests/test_api.py"]},
-    {"requirement_id":"pref-ota-safety","kind":"preferred","technical":true,"coverage":"full","summary":"OTA hold and electrical isolation safety states.","evidence":["cpp/bms_core.cpp"],"tests":["cpp/test_core.cpp"]}
+    {"requirement_id":"req-versioned-api","kind":"required","technical":true,"coverage":"full","summary":"Strict v1 API plus deprecated compatibility route and RFC 9457 errors.","evidence":["src/main.py","docs/requirements.md"],"tests":["tests/test_api.py"]},
+    {"requirement_id":"req-versioned-native-abi","kind":"required","technical":true,"coverage":"full","summary":"Status-returning v1 C ABI with runtime ABI compatibility probe.","evidence":["cpp/bms_core.h","cpp/bms_core.cpp"],"tests":["cpp/test_core.cpp"]},
+    {"requirement_id":"req-can-protocol","kind":"required","technical":true,"coverage":"full","summary":"Receive-only classic/FD SocketCAN collector and deterministic reference CAN profile.","evidence":["src/can_bridge.py","config/reference-can-profile.json","docs/pcan-usb-fd.md"],"tests":["tests/test_can_bridge.py"]},
+    {"requirement_id":"req-safety-state","kind":"required","technical":true,"coverage":"full","summary":"Native electrical-trip precedence, latched isolation, explicit safe reset, and reversible OTA hold.","evidence":["cpp/bms_core.cpp","src/main.py"],"tests":["cpp/test_core.cpp","tests/test_api.py"]},
+    {"requirement_id":"req-operability","kind":"required","technical":true,"coverage":"full","summary":"Separate health probes, low-cardinality metrics, structured logs, and bounded resources.","evidence":["src/main.py","docs/operations.md"],"tests":["tests/test_api.py"]},
+    {"requirement_id":"req-container-security","kind":"required","technical":true,"coverage":"full","summary":"Pinned base, non-root/read-only/capability-free runtime, proxy network, and CI gates.","evidence":["Dockerfile","compose.yaml",".github/workflows/publish.yml"],"tests":["smoke.py"]},
+    {"requirement_id":"req-verification","kind":"required","technical":true,"coverage":"full","summary":"Unit, sanitizer, leak, resource, benchmark, runtime smoke, and scorecard gates.","evidence":["scripts/verify_native.sh","quality/scorecard.json"],"tests":["cpp/test_core.cpp","tests/test_api.py"]},
+    {"requirement_id":"req-production-experience","kind":"required","technical":false,"coverage":"not_demonstrable","summary":"Employment tenure and production ownership cannot be established by source code.","evidence":[],"tests":[]}
   ]
 }
