@@ -3,52 +3,162 @@ from __future__ import annotations
 import ctypes
 import math
 import os
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Annotated, Literal
 
-from fastapi import FastAPI
-from pydantic import BaseModel, Field, field_validator
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
 
-WINDOW = int(os.getenv("BMS_WINDOW", "32"))
-CELL_CHANNELS = int(os.getenv("BMS_CELLS", "8"))
-WARN_SCORE = float(os.getenv("BMS_WARN_SCORE", "8.0"))
-CRITICAL_SCORE = float(os.getenv("BMS_CRITICAL_SCORE", "20.0"))
+MAX_NATIVE_STEPS = 4096
+MAX_NATIVE_CHANNELS = 512
+ABI_VERSION = 0x00010000
+
+
+def _env_int(name: str, default: int, minimum: int, maximum: int) -> int:
+    raw = os.getenv(name, str(default))
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise RuntimeError(f"{name} must be an integer") from exc
+    if not minimum <= value <= maximum:
+        raise RuntimeError(f"{name} must be between {minimum} and {maximum}")
+    return value
+
+
+def _env_float(name: str, default: float, minimum: float, maximum: float) -> float:
+    raw = os.getenv(name, str(default))
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise RuntimeError(f"{name} must be a number") from exc
+    if not math.isfinite(value) or not minimum <= value <= maximum:
+        raise RuntimeError(f"{name} must be finite and between {minimum} and {maximum}")
+    return value
+
+
+@dataclass(frozen=True)
+class Settings:
+    window: int
+    cells: int
+    warn_score: float
+    critical_score: float
+    core_library: Path
+
+    @classmethod
+    def from_env(cls) -> Settings:
+        settings = cls(
+            window=_env_int("BMS_WINDOW", 32, 3, MAX_NATIVE_STEPS),
+            cells=_env_int("BMS_CELLS", 8, 1, MAX_NATIVE_CHANNELS),
+            warn_score=_env_float("BMS_WARN_SCORE", 8.0, 0.0, 1_000_000.0),
+            critical_score=_env_float("BMS_CRITICAL_SCORE", 20.0, 0.0, 1_000_000.0),
+            core_library=Path(os.getenv("BMS_CORE_LIBRARY", "/app/libbms_core.so")),
+        )
+        if settings.warn_score >= settings.critical_score:
+            raise RuntimeError("BMS_WARN_SCORE must be lower than BMS_CRITICAL_SCORE")
+        if not settings.core_library.is_file():
+            raise RuntimeError(f"BMS_CORE_LIBRARY is not a file: {settings.core_library}")
+        return settings
+
+
+SETTINGS = Settings.from_env()
+
+
+class NativeCoreError(RuntimeError):
+    pass
 
 
 class Core:
-    def __init__(self) -> None:
-        library = Path(os.getenv("BMS_CORE_LIBRARY", "/app/libbms_core.so"))
+    def __init__(self, library: Path) -> None:
         self._lib = ctypes.CDLL(str(library))
-        self._lib.bms_anomaly_score.restype = ctypes.c_double
-        self._lib.bms_anomaly_score.argtypes = [
+        self._lib.bms_v1_abi_version.restype = ctypes.c_uint32
+        self._lib.bms_v1_abi_version.argtypes = []
+        actual_abi = int(self._lib.bms_v1_abi_version())
+        if actual_abi != ABI_VERSION:
+            raise RuntimeError(f"native ABI mismatch: expected {ABI_VERSION:#x}, got {actual_abi:#x}")
+
+        self._lib.bms_v1_anomaly_score.restype = ctypes.c_int32
+        self._lib.bms_v1_anomaly_score.argtypes = [
             ctypes.POINTER(ctypes.c_double),
             ctypes.c_size_t,
             ctypes.c_size_t,
+            ctypes.POINTER(ctypes.c_double),
             ctypes.POINTER(ctypes.c_size_t),
+        ]
+        self._lib.bms_v1_next_safety_state.restype = ctypes.c_int32
+        self._lib.bms_v1_next_safety_state.argtypes = [
+            ctypes.c_int32,
+            ctypes.c_double,
+            ctypes.c_double,
+            ctypes.c_int32,
+            ctypes.c_int32,
+            ctypes.POINTER(ctypes.c_int32),
         ]
 
     def score(self, matrix: list[list[float]]) -> tuple[float, int]:
         flat = [value for row in matrix for value in row]
         values = (ctypes.c_double * len(flat))(*flat)
+        score = ctypes.c_double()
         worst = ctypes.c_size_t()
-        score = self._lib.bms_anomaly_score(values, len(matrix), len(matrix[0]), ctypes.byref(worst))
-        if score < 0 or not math.isfinite(score):
-            raise ValueError("native detector rejected telemetry")
-        return float(score), int(worst.value)
+        status = self._lib.bms_v1_anomaly_score(
+            values, len(matrix), len(matrix[0]), ctypes.byref(score), ctypes.byref(worst)
+        )
+        if status != 0 or score.value < 0 or not math.isfinite(score.value):
+            raise NativeCoreError(f"native detector rejected telemetry (status={status})")
+        return float(score.value), int(worst.value)
+
+    def next_safety_state(
+        self,
+        current_state: int,
+        max_voltage: float,
+        max_temperature: float,
+        ota_requested: bool,
+        reset_requested: bool,
+    ) -> int:
+        next_state = ctypes.c_int32()
+        status = self._lib.bms_v1_next_safety_state(
+            current_state,
+            max_voltage,
+            max_temperature,
+            int(ota_requested),
+            int(reset_requested),
+            ctypes.byref(next_state),
+        )
+        if status != 0:
+            raise NativeCoreError(f"native safety state rejected input (status={status})")
+        return int(next_state.value)
+
+
+FiniteFloat = Annotated[float, Field(strict=True, allow_inf_nan=False)]
+PackId = Annotated[
+    str,
+    StringConstraints(strict=True, min_length=1, max_length=64, pattern=r"^[A-Za-z0-9._:-]+$"),
+]
+SafetyState = Literal["normal", "isolate_latched", "ota_hold"]
+STATE_TO_NATIVE: dict[SafetyState, int] = {"normal": 0, "isolate_latched": 1, "ota_hold": 2}
+NATIVE_TO_STATE: dict[int, SafetyState] = {value: key for key, value in STATE_TO_NATIVE.items()}
 
 
 class TelemetryWindow(BaseModel):
-    pack_id: str = Field(min_length=1, max_length=64)
-    timestamp_ms: int = Field(ge=0)
-    cell_voltages: list[list[float]]
-    pack_temp_c: list[float]
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    pack_id: PackId
+    timestamp_ms: int = Field(ge=0, strict=True)
+    cell_voltages: list[list[FiniteFloat]]
+    pack_temp_c: list[FiniteFloat]
+    current_safety_state: SafetyState = "normal"
+    ota_requested: bool = Field(default=False, strict=True)
+    reset_requested: bool = Field(default=False, strict=True)
 
     @field_validator("cell_voltages")
     @classmethod
     def validate_cells(cls, value: list[list[float]]) -> list[list[float]]:
-        if len(value) != WINDOW:
-            raise ValueError(f"cell_voltages must contain {WINDOW} steps")
-        if any(len(row) != CELL_CHANNELS for row in value):
-            raise ValueError(f"every step must contain {CELL_CHANNELS} cells")
+        if len(value) != SETTINGS.window:
+            raise ValueError(f"cell_voltages must contain {SETTINGS.window} steps")
+        if any(len(row) != SETTINGS.cells for row in value):
+            raise ValueError(f"every step must contain {SETTINGS.cells} cells")
         if any(not 0.0 < cell < 6.0 for row in value for cell in row):
             raise ValueError("cell voltage is outside the measurable range")
         return value
@@ -56,39 +166,110 @@ class TelemetryWindow(BaseModel):
     @field_validator("pack_temp_c")
     @classmethod
     def validate_temperature(cls, value: list[float]) -> list[float]:
-        if len(value) != WINDOW:
-            raise ValueError(f"pack_temp_c must contain {WINDOW} steps")
+        if len(value) != SETTINGS.window:
+            raise ValueError(f"pack_temp_c must contain {SETTINGS.window} steps")
+        if any(not -80.0 <= temperature <= 150.0 for temperature in value):
+            raise ValueError("pack temperature is outside the measurable range")
         return value
 
 
-core = Core()
-app = FastAPI(title="BMS edge anomaly runtime", version="1.0.0")
+class DetectionResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    api_version: Literal["v1"] = "v1"
+    pack_id: str
+    timestamp_ms: int
+    score: float
+    severity: Literal["normal", "warn", "critical"]
+    worst_cell: int
+    max_cell_voltage: float
+    max_pack_temperature: float
+    safety_state: SafetyState
+    recommended_action: Literal["continue", "halt_balancing", "isolate_cells", "ota_hold"]
+
+
+core = Core(SETTINGS.core_library)
+app = FastAPI(title="BMS edge anomaly runtime", version="1.1.0")
+
+
+def _problem(status: int, title: str, detail: str, instance: str, **extensions: object) -> JSONResponse:
+    body: dict[str, object] = {
+        "type": f"https://github.com/ndndndn1/bms-edge-anomaly-runtime/problems/{status}",
+        "title": title,
+        "status": status,
+        "detail": detail,
+        "instance": instance,
+    }
+    body.update(extensions)
+    return JSONResponse(body, status_code=status, media_type="application/problem+json")
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_problem(request: Request, exc: RequestValidationError) -> JSONResponse:
+    errors = [
+        {"location": "/".join(str(part) for part in error["loc"]), "message": error["msg"]}
+        for error in exc.errors()
+    ]
+    return _problem(422, "Request validation failed", "Telemetry did not match the v1 contract.",
+                    request.url.path, errors=errors)
+
+
+@app.exception_handler(NativeCoreError)
+async def native_problem(request: Request, exc: NativeCoreError) -> JSONResponse:
+    return _problem(503, "Native detector unavailable", str(exc), request.url.path)
 
 
 @app.get("/health")
 def health() -> dict[str, object]:
-    return {"status": "ok", "detector": "native-robust-delta", "window": WINDOW, "cells": CELL_CHANNELS}
+    return {
+        "status": "ok",
+        "detector": "native-robust-delta",
+        "abi_version": "1.0",
+        "window": SETTINGS.window,
+        "cells": SETTINGS.cells,
+    }
 
 
-@app.post("/detect")
-def detect(window: TelemetryWindow) -> dict[str, object]:
+def _detect(window: TelemetryWindow) -> DetectionResult:
     score, channel = core.score(window.cell_voltages)
     max_voltage = max(max(row) for row in window.cell_voltages)
     max_temperature = max(window.pack_temp_c)
-    electrical_trip = max_voltage > 4.25 or max_temperature > 60.0
-    if electrical_trip or score >= CRITICAL_SCORE:
+    next_state = core.next_safety_state(
+        STATE_TO_NATIVE[window.current_safety_state],
+        max_voltage,
+        max_temperature,
+        window.ota_requested,
+        window.reset_requested,
+    )
+    safety_state = NATIVE_TO_STATE[next_state]
+    electrical_trip = safety_state == "isolate_latched"
+    if electrical_trip or score >= SETTINGS.critical_score:
         severity, action = "critical", "isolate_cells"
-    elif score >= WARN_SCORE:
+    elif safety_state == "ota_hold":
+        severity, action = "normal", "ota_hold"
+    elif score >= SETTINGS.warn_score:
         severity, action = "warn", "halt_balancing"
     else:
         severity, action = "normal", "continue"
-    return {
-        "pack_id": window.pack_id,
-        "timestamp_ms": window.timestamp_ms,
-        "score": round(score, 4),
-        "severity": severity,
-        "worst_cell": channel,
-        "max_cell_voltage": max_voltage,
-        "max_pack_temperature": max_temperature,
-        "recommended_action": action,
-    }
+    return DetectionResult(
+        pack_id=window.pack_id,
+        timestamp_ms=window.timestamp_ms,
+        score=round(score, 4),
+        severity=severity,
+        worst_cell=channel,
+        max_cell_voltage=max_voltage,
+        max_pack_temperature=max_temperature,
+        safety_state=safety_state,
+        recommended_action=action,
+    )
+
+
+@app.post("/v1/detect", response_model=DetectionResult)
+def detect_v1(window: TelemetryWindow) -> DetectionResult:
+    return _detect(window)
+
+
+@app.post("/detect", response_model=DetectionResult, deprecated=True)
+def detect_compatibility(window: TelemetryWindow) -> DetectionResult:
+    """Compatibility route. New clients should use /v1/detect."""
+    return _detect(window)
