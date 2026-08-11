@@ -1,39 +1,80 @@
 name: test-and-publish
+
 on:
   push:
     branches: [main]
   pull_request:
+
 permissions:
   contents: read
-  packages: write
-  attestations: write
-  id-token: write
+
+concurrency:
+  group: bms-runtime-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   verify:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - run: docker compose run --rm test
-      - run: docker compose config --quiet
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Validate Compose and scorecard
+        run: |
+          docker compose config --quiet
+          python3 quality/check_score.py
+      - name: Native sanitizer, leak, resource, and benchmark checks
+        run: ./scripts/verify_native.sh
+      - name: Python and SocketCAN tests in hardened container
+        run: |
+          docker build --target test -t bms-edge-anomaly-runtime:test .
+          docker run --rm --read-only --tmpfs /tmp:rw,noexec,nosuid,nodev \
+            --cap-drop ALL --security-opt no-new-privileges \
+            bms-edge-anomaly-runtime:test
+      - name: Runtime smoke and security assertions
+        run: |
+          set -euo pipefail
+          trap 'docker rm -f bms-runtime-ci >/dev/null 2>&1 || true' EXIT
+          docker build --target runtime -t bms-edge-anomaly-runtime:runtime .
+          docker run -d --name bms-runtime-ci --network none --read-only \
+            --tmpfs /tmp:rw,noexec,nosuid,nodev --cap-drop ALL \
+            --security-opt no-new-privileges --pids-limit 128 --memory 256m \
+            -e BMS_ENDPOINT=http://127.0.0.1:8000/v1/detect \
+            -v "$PWD/smoke.py:/smoke.py:ro" bms-edge-anomaly-runtime:runtime
+          for attempt in $(seq 1 30); do
+            [ "$(docker inspect --format '{{.State.Health.Status}}' bms-runtime-ci)" = healthy ] && break
+            sleep 1
+          done
+          test "$(docker inspect --format '{{.State.Health.Status}}' bms-runtime-ci)" = healthy
+          test "$(docker inspect --format '{{.Config.User}}' bms-runtime-ci)" = 10001:10001
+          test "$(docker inspect --format '{{.HostConfig.ReadonlyRootfs}}' bms-runtime-ci)" = true
+          test "$(docker inspect --format '{{join .HostConfig.CapDrop ","}}' bms-runtime-ci)" = ALL
+          docker exec bms-runtime-ci python /smoke.py
+
   image:
     if: github.event_name == 'push'
     needs: verify
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+      attestations: write
+      id-token: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/login-action@v3
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/metadata-action@v5
+      - uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
         id: meta
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
             type=raw,value=latest
             type=sha
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         id: push
         with:
           context: .
@@ -41,7 +82,8 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-      - uses: actions/attest-build-provenance@v2
+          provenance: mode=max
+      - uses: actions/attest-build-provenance@96b4a1ef7235a096b17240c259729fdd70c83d45 # v2
         with:
           subject-name: ghcr.io/${{ github.repository }}
           subject-digest: ${{ steps.push.outputs.digest }}

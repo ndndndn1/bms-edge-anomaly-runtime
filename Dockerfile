@@ -6,7 +6,10 @@ WORKDIR /build
 COPY cpp ./cpp
 RUN g++ -std=c++17 -O2 -Wall -Wextra -Werror -fPIC -shared cpp/bms_core.cpp -o libbms_core.so \
  && g++ -std=c++17 -O2 -Wall -Wextra -Werror cpp/bms_core.cpp cpp/test_core.cpp -o test_core \
- && ./test_core
+ && ./test_core \
+ && gcc -std=c11 -Wall -Wextra -Werror -c cpp/test_c_abi.c -o test_c_abi.o \
+ && g++ test_c_abi.o cpp/bms_core.cpp -o test_c_abi \
+ && ./test_c_abi
 
 FROM python:3.12-slim@sha256:804ddf3251a60bbf9c92e73b7566c40428d54d0e79d3428194edf40da6521286 AS runtime
 LABEL org.opencontainers.image.source="https://github.com/ndndndn1/bms-edge-anomaly-runtime"

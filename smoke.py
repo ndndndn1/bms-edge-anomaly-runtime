@@ -1,10 +1,11 @@
 import json
+import os
 import urllib.request
 
 
 def post(payload: dict) -> dict:
     request = urllib.request.Request(
-        "http://127.0.0.1:8801/detect",
+        os.getenv("BMS_ENDPOINT", "http://127.0.0.1:8801/v1/detect"),
         data=json.dumps(payload).encode(),
         headers={"content-type": "application/json"},
     )

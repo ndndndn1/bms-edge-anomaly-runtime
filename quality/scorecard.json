@@ -1,0 +1,50 @@
+{
+  "schema_version": "1.0",
+  "target": 80,
+  "score": 93,
+  "categories": [
+    {
+      "id": "correctness",
+      "max": 25,
+      "earned": 24,
+      "evidence": ["cpp/bms_core.cpp", "cpp/test_core.cpp", "tests/test_api.py"]
+    },
+    {
+      "id": "interface_contract",
+      "max": 15,
+      "earned": 14,
+      "evidence": ["cpp/bms_core.h", "src/main.py", "docs/requirements.md"]
+    },
+    {
+      "id": "functional_safety_boundary",
+      "max": 20,
+      "earned": 18,
+      "evidence": ["cpp/test_core.cpp", "docs/pcan-usb-fd.md", "README.md"]
+    },
+    {
+      "id": "operability",
+      "max": 15,
+      "earned": 14,
+      "evidence": ["src/main.py", "docs/operations.md", "compose.yaml"]
+    },
+    {
+      "id": "security",
+      "max": 10,
+      "earned": 9,
+      "evidence": ["Dockerfile", "compose.yaml", ".github/workflows/publish.yml"]
+    },
+    {
+      "id": "verification_and_docs",
+      "max": 15,
+      "earned": 14,
+      "evidence": ["scripts/verify_native.sh", "cpp/benchmark_core.cpp", "tests/test_can_bridge.py"]
+    }
+  ],
+  "hard_gates": {
+    "tests": true,
+    "runtime_smoke": true,
+    "memory": true,
+    "security": true,
+    "docs_examples": true
+  }
+}

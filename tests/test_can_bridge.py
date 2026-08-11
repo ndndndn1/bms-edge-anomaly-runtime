@@ -26,6 +26,11 @@ def test_socketcan_classic_frame_decode() -> None:
     assert decode_socketcan_frame(raw) == CanFrame(0x180, bytes.fromhex("90889116"))
 
 
+def test_socketcan_fd_frame_decode() -> None:
+    raw = struct.pack("=IBB2x64s", 0x190, 12, 0, bytes(range(64)))
+    assert decode_socketcan_frame(raw) == CanFrame(0x190, bytes(range(12)))
+
+
 def test_incomplete_step_is_discarded_at_temperature_boundary() -> None:
     collector = TelemetryCollector("pack", 2, 3, 1)
     assert collector.ingest(CanFrame(0x190, bytes.fromhex("0bb8"))) is None

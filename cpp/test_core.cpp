@@ -41,5 +41,9 @@ int main() {
     assert(state == BMS_V1_OTA_HOLD);
     assert(bms_v1_next_safety_state(state, 3.80, 30.0, 0, 0, &state) == BMS_V1_OK);
     assert(state == BMS_V1_NORMAL);
+    assert(bms_v1_next_safety_state(99, 3.80, 30.0, 0, 0, &state) ==
+           BMS_V1_INVALID_ARGUMENT);
+    assert(bms_v1_next_safety_state(BMS_V1_NORMAL, 3.80, 30.0, 2, 0, &state) ==
+           BMS_V1_INVALID_ARGUMENT);
     return 0;
 }
