@@ -61,7 +61,9 @@ python3 quality/check_score.py
 - Logs are one-line JSON with request ID, method, bounded route template, status, and duration. Pack
   IDs and telemetry are excluded.
 
-See [requirements and evidence](docs/requirements.md), [operations](docs/operations.md), and
+See the canonical [enterprise requirements](docs/enterprise-requirements.md), detailed
+[acceptance evidence](docs/requirements.md), [quality scorecard](docs/quality-scorecard.md),
+[operations](docs/operations.md), and
 [PCAN-USB FD connection guidance](docs/pcan-usb-fd.md). The checked-in scorecard is validated in CI.
 
 ## Limits
