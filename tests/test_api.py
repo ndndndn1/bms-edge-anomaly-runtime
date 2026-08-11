@@ -82,3 +82,24 @@ def test_strict_schema_rejects_extra_and_non_finite_values() -> None:
         headers={"content-type": "application/json"},
     )
     assert response.status_code == 422
+
+
+def test_health_contract_and_low_cardinality_metrics() -> None:
+    assert client.get("/health/live").json() == {"status": "alive"}
+    ready = client.get("/health/ready")
+    assert ready.status_code == 200
+    assert ready.json()["status"] == "ready"
+    assert ready.json()["abi_version"] == "1.0"
+    assert ready.headers["x-request-id"]
+    metrics_response = client.get("/metrics")
+    assert metrics_response.status_code == 200
+    assert "bms_http_requests_total" in metrics_response.text
+    assert 'route="/health/ready"' in metrics_response.text
+    assert "pack-1" not in metrics_response.text
+
+
+def test_unknown_route_is_problem_details() -> None:
+    response = client.get("/not-a-real-pack/secret-id")
+    assert response.status_code == 404
+    assert response.headers["content-type"].startswith("application/problem+json")
+    assert response.json()["status"] == 404

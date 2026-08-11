@@ -1,20 +1,28 @@
 from __future__ import annotations
 
 import ctypes
+import json
+import logging
 import math
 import os
+import secrets
+import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Literal
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
+from starlette.exceptions import HTTPException
 
 MAX_NATIVE_STEPS = 4096
 MAX_NATIVE_CHANNELS = 512
 ABI_VERSION = 0x00010000
+LOGGER = logging.getLogger("bms.runtime")
+logging.basicConfig(level=os.getenv("BMS_LOG_LEVEL", "INFO"), format="%(message)s")
 
 
 def _env_int(name: str, default: int, minimum: int, maximum: int) -> int:
@@ -78,6 +86,7 @@ class Core:
         actual_abi = int(self._lib.bms_v1_abi_version())
         if actual_abi != ABI_VERSION:
             raise RuntimeError(f"native ABI mismatch: expected {ABI_VERSION:#x}, got {actual_abi:#x}")
+        self.abi_version = actual_abi
 
         self._lib.bms_v1_anomaly_score.restype = ctypes.c_int32
         self._lib.bms_v1_anomaly_score.argtypes = [
@@ -141,6 +150,56 @@ STATE_TO_NATIVE: dict[SafetyState, int] = {"normal": 0, "isolate_latched": 1, "o
 NATIVE_TO_STATE: dict[int, SafetyState] = {value: key for key, value in STATE_TO_NATIVE.items()}
 
 
+class Metrics:
+    """Small, bounded in-memory Prometheus collector."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._requests: dict[tuple[str, str, str], int] = {}
+        self._duration: dict[str, float] = {}
+        self._detections: dict[str, int] = {"normal": 0, "warn": 0, "critical": 0}
+
+    def request(self, method: str, route: str, status: int, duration: float) -> None:
+        status_class = f"{status // 100}xx"
+        key = (method, route, status_class)
+        with self._lock:
+            self._requests[key] = self._requests.get(key, 0) + 1
+            self._duration[route] = self._duration.get(route, 0.0) + duration
+
+    def detection(self, severity: str) -> None:
+        with self._lock:
+            self._detections[severity] += 1
+
+    def render(self) -> str:
+        with self._lock:
+            lines = [
+                "# HELP bms_http_requests_total HTTP requests by bounded route and status class.",
+                "# TYPE bms_http_requests_total counter",
+            ]
+            for (method, route, status_class), count in sorted(self._requests.items()):
+                lines.append(
+                    f'bms_http_requests_total{{method="{method}",route="{route}",'
+                    f'status_class="{status_class}"}} {count}'
+                )
+            lines.extend(
+                [
+                    "# HELP bms_http_request_duration_seconds_sum Total request time by bounded route.",
+                    "# TYPE bms_http_request_duration_seconds_sum counter",
+                ]
+            )
+            for route, duration in sorted(self._duration.items()):
+                lines.append(f'bms_http_request_duration_seconds_sum{{route="{route}"}} {duration:.9f}')
+            lines.extend(
+                [
+                    "# HELP bms_detections_total Detection results by severity.",
+                    "# TYPE bms_detections_total counter",
+                ]
+            )
+            for severity, count in sorted(self._detections.items()):
+                lines.append(f'bms_detections_total{{severity="{severity}"}} {count}')
+            return "\n".join(lines) + "\n"
+
+
 class TelemetryWindow(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -189,7 +248,35 @@ class DetectionResult(BaseModel):
 
 
 core = Core(SETTINGS.core_library)
+metrics = Metrics()
 app = FastAPI(title="BMS edge anomaly runtime", version="1.1.0")
+
+
+@app.middleware("http")
+async def observe_request(request: Request, call_next):  # type: ignore[no-untyped-def]
+    request_id = secrets.token_hex(8)
+    request.state.request_id = request_id
+    started = time.perf_counter()
+    response = await call_next(request)
+    duration = time.perf_counter() - started
+    route_object = request.scope.get("route")
+    route = getattr(route_object, "path", "unmatched")
+    metrics.request(request.method, route, response.status_code, duration)
+    LOGGER.info(
+        json.dumps(
+            {
+                "event": "http_request",
+                "request_id": request_id,
+                "method": request.method,
+                "route": route,
+                "status": response.status_code,
+                "duration_ms": round(duration * 1000, 3),
+            },
+            separators=(",", ":"),
+        )
+    )
+    response.headers["x-request-id"] = request_id
+    return response
 
 
 def _problem(status: int, title: str, detail: str, instance: str, **extensions: object) -> JSONResponse:
@@ -219,15 +306,36 @@ async def native_problem(request: Request, exc: NativeCoreError) -> JSONResponse
     return _problem(503, "Native detector unavailable", str(exc), request.url.path)
 
 
+@app.exception_handler(HTTPException)
+async def http_problem(request: Request, exc: HTTPException) -> JSONResponse:
+    return _problem(exc.status_code, "HTTP request failed", str(exc.detail), request.url.path)
+
+
 @app.get("/health")
 def health() -> dict[str, object]:
+    """Compatibility aggregate health route. Probes should use /health/live or /health/ready."""
+    return readiness()
+
+
+@app.get("/health/live")
+def liveness() -> dict[str, str]:
+    return {"status": "alive"}
+
+
+@app.get("/health/ready")
+def readiness() -> dict[str, object]:
     return {
-        "status": "ok",
+        "status": "ready",
         "detector": "native-robust-delta",
         "abi_version": "1.0",
         "window": SETTINGS.window,
         "cells": SETTINGS.cells,
     }
+
+
+@app.get("/metrics", response_class=PlainTextResponse)
+def prometheus_metrics() -> str:
+    return metrics.render()
 
 
 def _detect(window: TelemetryWindow) -> DetectionResult:
@@ -251,6 +359,7 @@ def _detect(window: TelemetryWindow) -> DetectionResult:
         severity, action = "warn", "halt_balancing"
     else:
         severity, action = "normal", "continue"
+    metrics.detection(severity)
     return DetectionResult(
         pack_id=window.pack_id,
         timestamp_ms=window.timestamp_ms,
