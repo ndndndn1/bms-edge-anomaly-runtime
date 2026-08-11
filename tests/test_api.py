@@ -103,3 +103,13 @@ def test_unknown_route_is_problem_details() -> None:
     assert response.status_code == 404
     assert response.headers["content-type"].startswith("application/problem+json")
     assert response.json()["status"] == 404
+
+
+def test_declared_oversized_request_is_rejected_before_parsing() -> None:
+    response = client.post(
+        "/v1/detect",
+        content=b"{}",
+        headers={"content-type": "application/json", "content-length": "999999"},
+    )
+    assert response.status_code == 413
+    assert response.headers["content-type"].startswith("application/problem+json")

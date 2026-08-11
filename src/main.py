@@ -54,6 +54,7 @@ class Settings:
     warn_score: float
     critical_score: float
     core_library: Path
+    max_body_bytes: int
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -63,6 +64,7 @@ class Settings:
             warn_score=_env_float("BMS_WARN_SCORE", 8.0, 0.0, 1_000_000.0),
             critical_score=_env_float("BMS_CRITICAL_SCORE", 20.0, 0.0, 1_000_000.0),
             core_library=Path(os.getenv("BMS_CORE_LIBRARY", "/app/libbms_core.so")),
+            max_body_bytes=_env_int("BMS_MAX_BODY_BYTES", 262_144, 1024, 10_485_760),
         )
         if settings.warn_score >= settings.critical_score:
             raise RuntimeError("BMS_WARN_SCORE must be lower than BMS_CRITICAL_SCORE")
@@ -257,7 +259,25 @@ async def observe_request(request: Request, call_next):  # type: ignore[no-untyp
     request_id = secrets.token_hex(8)
     request.state.request_id = request_id
     started = time.perf_counter()
-    response = await call_next(request)
+    content_length = request.headers.get("content-length")
+    if content_length is not None:
+        try:
+            declared_length = int(content_length)
+        except ValueError:
+            response = _problem(400, "Invalid Content-Length", "Content-Length must be an integer.",
+                                request.url.path)
+        else:
+            if declared_length < 0:
+                response = _problem(400, "Invalid Content-Length", "Content-Length cannot be negative.",
+                                    request.url.path)
+            elif declared_length > SETTINGS.max_body_bytes:
+                response = _problem(413, "Request body too large",
+                                    f"Request body exceeds {SETTINGS.max_body_bytes} bytes.",
+                                    request.url.path)
+            else:
+                response = await call_next(request)
+    else:
+        response = await call_next(request)
     duration = time.perf_counter() - started
     route_object = request.scope.get("route")
     route = getattr(route_object, "path", "unmatched")
@@ -330,6 +350,7 @@ def readiness() -> dict[str, object]:
         "abi_version": "1.0",
         "window": SETTINGS.window,
         "cells": SETTINGS.cells,
+        "max_body_bytes": SETTINGS.max_body_bytes,
     }
 
 
