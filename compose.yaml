@@ -4,6 +4,15 @@ services:
       context: .
       target: runtime
     image: ghcr.io/ndndndn1/bms-edge-anomaly-runtime:latest
+    init: true
+    read_only: true
+    user: "10001:10001"
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 128
+    mem_limit: 256m
+    tmpfs:
+      - /tmp:size=16m,mode=1777,noexec,nosuid,nodev
     ports:
       - "127.0.0.1:8801:8000"
     environment:
@@ -11,13 +20,30 @@ services:
       BMS_CELLS: "8"
       BMS_WARN_SCORE: "8"
       BMS_CRITICAL_SCORE: "20"
+      BMS_MAX_BODY_BYTES: "262144"
+      HTTP_PROXY: "http://172.30.0.10:3128"
+      HTTPS_PROXY: "http://172.30.0.10:3128"
+      NO_PROXY: "127.0.0.1,localhost"
+      http_proxy: "http://172.30.0.10:3128"
+      https_proxy: "http://172.30.0.10:3128"
+      no_proxy: "127.0.0.1,localhost"
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=2)"]
       interval: 5s
       timeout: 3s
       retries: 10
+    networks: ["proxy-net"]
   test:
     build:
       context: .
       target: test
     profiles: ["test"]
+    network_mode: none
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777,noexec,nosuid,nodev
+
+networks:
+  proxy-net:
+    external: true
+    name: proxy-net
